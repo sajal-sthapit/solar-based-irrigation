@@ -1,0 +1,425 @@
+---
+title: "Solar-based Irrigation Analysis"
+author: "Sajal Sthapit"
+date: '2022-08-26'
+output: html_document
+---
+
+```{r loading libraries, echo=TRUE, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(cowplot) # for plot_grid()
+library(ggpubr) # for stat_compare_means()
+```
+
+# Test assumptions about the data
+
+## Test for normality
+Check if data have a normal distribution by using the Shapiro Wilk test (stats::shapiro.test). If P < 0.05 then there is high confidence that the distribution is not normal. In our case, x.ci, y.ci from Bardiya, most variables in Nawalpur, Mahottari, and all sites are not normal.
+
+```{r Check if data meet the assumption of normality}
+plot.data <- read_csv("solar-irrigation-data.csv")
+attach(plot.data)
+df <- list(Nawalpur = filter(plot.data, District == "Nawalpur"),
+           Bardiya = filter(plot.data, District == "Bardiya"),
+           Mahottari = filter(plot.data, District == "Mahottari"),
+           All_sites = plot.data)
+apply(df$Bardiya[6:16], MARGIN = 2, shapiro.test)
+apply(df$Nawalpur[6:16], MARGIN = 2, shapiro.test)
+apply(df$Mahottari[6:16], MARGIN = 2, shapiro.test)
+apply(df$All_sites[6:16], MARGIN = 2, shapiro.test)
+```
+
+## Test for homogeneity of variance
+Check if variances in groups of samples are the same using the Bartlett Test (stats::bartlett.test). If P < 0.5 then the variances between groups are significantly different. In our case, when considering data from all sites together, x.kg vs y.kg, x.income vs y.income, x.crop vs y.crop, and x.ci vs y.ci had unequal variances.
+
+```{r Check for homogeneity of variance}
+# Check for equal variance for all sites
+data.tidy <- pivot_longer(plot.data, cols = x.area:y.ci, names_to = "treatment", values_to = "value")
+data.tidy %>% filter(., treatment %in% c("x.area", "y.area")) %>% 
+  bartlett.test(data = ., value ~ treatment)
+data.tidy %>% filter(., treatment %in% c("x.kg", "y.kg")) %>% 
+  bartlett.test(data = ., value ~ treatment) %>% .[["p.value"]]
+data.tidy %>% filter(., treatment %in% c("x.income", "y.income")) %>% 
+  bartlett.test(data = ., value ~ treatment) %>% .[["p.value"]]
+data.tidy %>% filter(., treatment %in% c("x.crop", "y.crop")) %>% 
+  bartlett.test(data = ., value ~ treatment) %>% .[["p.value"]]
+data.tidy %>% filter(., treatment %in% c("x.ci", "y.ci")) %>% 
+  bartlett.test(data = ., value ~ treatment) %>% .[["p.value"]]
+
+# Check for equal variance by district
+# Bardiya
+data.tidy %>% filter(., District == "Bardiya" & treatment %in% c("x.area", "y.area")) %>%
+  bartlett.test(data = ., value ~ treatment) %>% .[["p.value"]]
+data.tidy %>% filter(., District == "Bardiya" & treatment %in% c("x.kg", "y.kg")) %>%
+  bartlett.test(data = ., value ~ treatment) %>% .[["p.value"]]
+data.tidy %>% filter(., District == "Bardiya" & treatment %in% c("x.income", "y.income")) %>%
+  bartlett.test(data = ., value ~ treatment) %>% .[["p.value"]]
+data.tidy %>% filter(., District == "Bardiya" & treatment %in% c("x.crop", "y.crop")) %>%
+  bartlett.test(data = ., value ~ treatment) %>% .[["p.value"]]
+data.tidy %>% filter(., District == "Bardiya" & treatment %in% c("x.ci", "y.ci")) %>%
+  bartlett.test(data = ., value ~ treatment) %>% .[["p.value"]]
+# Mahottari
+data.tidy %>% filter(., District == "Mahottari" & treatment %in% c("x.area", "y.area")) %>%
+  bartlett.test(data = ., value ~ treatment) %>% .[["p.value"]]
+data.tidy %>% filter(., District == "Mahottari" & treatment %in% c("x.kg", "y.kg")) %>%
+  bartlett.test(data = ., value ~ treatment) %>% .[["p.value"]]
+data.tidy %>% filter(., District == "Mahottari" & treatment %in% c("x.income", "y.income")) %>%
+  bartlett.test(data = ., value ~ treatment) %>% .[["p.value"]]
+data.tidy %>% filter(., District == "Mahottari" & treatment %in% c("x.crop", "y.crop")) %>%
+  bartlett.test(data = ., value ~ treatment) %>% .[["p.value"]]
+data.tidy %>% filter(., District == "Mahottari" & treatment %in% c("x.ci", "y.ci")) %>%
+  bartlett.test(data = ., value ~ treatment) %>% .[["p.value"]]
+# Nawalpur
+data.tidy %>% filter(., District == "Nawalpur" & treatment %in% c("x.area", "y.area")) %>%
+  bartlett.test(data = ., value ~ treatment) %>% .[["p.value"]]
+data.tidy %>% filter(., District == "Nawalpur" & treatment %in% c("x.kg", "y.kg")) %>%
+  bartlett.test(data = ., value ~ treatment) %>% .[["p.value"]]
+data.tidy %>% filter(., District == "Nawalpur" & treatment %in% c("x.income", "y.income")) %>%
+  bartlett.test(data = ., value ~ treatment) %>% .[["p.value"]]
+data.tidy %>% filter(., District == "Nawalpur" & treatment %in% c("x.crop", "y.crop")) %>%
+  bartlett.test(data = ., value ~ treatment) %>% .[["p.value"]]
+data.tidy %>% filter(., District == "Nawalpur" & treatment %in% c("x.ci", "y.ci")) %>%
+  bartlett.test(data = ., value ~ treatment) %>% .[["p.value"]]
+```
+
+## Conclusion
+Since not all variables of interest meet the assumption of normal distribution or homogeneity of variance, we will use non-parametric Wilcoxon rank-sum test to compare the before and after intervention measures.
+
+# Generate summaries for supplemental tables
+Calculate minimum, maximum, average (mean), standard deviation, median, and variances of variables of interest to construct results tables. Note that data.tidy was created in the previous chunk for the test of homogeneity of variance.
+```{r generating summaries for tables}
+summ.by.all <- data.tidy %>% 
+  group_by(treatment) %>% 
+  summarize(
+    nobs = length(value),
+    min = min(value),
+    max = max(value),
+    average = mean(value),
+    sd = sd(value),
+    median = median(value),
+    var = var(value)
+  )
+
+summ.by.dist <- data.tidy %>% 
+  group_by(District, treatment) %>% 
+  summarize(
+    nobs = length(value),
+    min = min(value),
+    max = max(value),
+    average = mean(value),
+    sd = sd(value),
+    median = median(value),
+    var = var(value)
+  )
+
+summ.by.site <- data.tidy %>% 
+  group_by(District, Site, treatment) %>% 
+  summarize(
+    nobs = length(value),
+    min = min(value),
+    max = max(value),
+    average = mean(value),
+    sd = sd(value),
+    median = median(value),
+    var = var(value)
+  )
+
+summ.by.all
+summ.by.dist
+summ.by.site
+
+write_csv(summ.by.all,  "summbyall.csv")
+write_csv(summ.by.dist, "summbydist.csv")
+write_csv(summ.by.site, "summbysite.csv")
+```
+
+# Generate scatter plots
+```{r generating scatter plots, echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+# Crop intensity ----
+scale_max <- max(x.ci, y.ci, na.rm = TRUE) + 1
+p.ci <- plot.data %>% 
+  ggplot(aes(x = x.ci, y = y.ci, shape = District, color = Site)) +
+  geom_abline(intercept = 0, slope = 1) +
+  xlim(0, scale_max) + ylim(0, scale_max) +
+  geom_point(size = 8, alpha = 1) +
+  geom_text(aes(label = SN)) +
+  scale_shape_manual(values = c(1, 0, 2)) +
+  facet_grid(. ~ District) +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) +
+  labs(title = "A. Cropping intensity",
+       x = "Before",
+       y = "After")
+p.ci
+
+# Production ----
+scale_max <- max(x.kg, y.kg, na.rm = TRUE)/1000 + 1
+p.kg <- plot.data %>% 
+  ggplot(aes(x = x.kg/1000, y = y.kg/1000, shape = District, color = Site)) +
+  geom_abline(intercept = 0, slope = 1) +
+  xlim(0, scale_max) + ylim(0, scale_max) +
+  geom_point(size = 8, alpha = 1) +
+  geom_text(aes(label = SN)) +
+  scale_shape_manual(values = c(1, 0, 2)) +
+  facet_grid(. ~ District) +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) +
+  labs(title = "B. Production in tons",
+       x = "Before",
+       y = "After")
+p.kg
+
+# Crop diversity ----
+scale_max <- max(x.crop, y.crop, na.rm = TRUE) + 1
+p.crop <- plot.data %>% 
+  ggplot(aes(x = x.crop, y = y.crop, shape = District, color = Site)) +
+  geom_abline(intercept = 0, slope = 1) +
+  xlim(0, scale_max) + ylim(0, scale_max) +
+  geom_point(size = 8, alpha = 1) +
+  geom_text(aes(label = SN)) +
+  scale_shape_manual(values = c(1, 0, 2)) +
+  facet_grid(. ~ District) +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) +
+  labs(title = "C. Crops per household",
+       x = "Before",
+       y = "After")
+p.crop
+
+# Change in Production Area ----
+scale_max <- max(x.area, y.area, na.rm = TRUE) + 1
+p.area <- plot.data %>% 
+  ggplot(aes(x = x.area, y = y.area, shape = District, color = Site)) +
+  geom_abline(intercept = 0, slope = 1) +
+  xlim(0, scale_max) + ylim(0, scale_max) +
+  geom_point(size = 8, alpha = 1) +
+  geom_text(aes(label = SN)) +
+  scale_shape_manual(values = c(1, 0, 2)) +
+  facet_grid(. ~ District) +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) +
+  labs(title = "D. Production area per household",
+       x = "Before",
+       y = "After")
+p.area
+
+# Income ----
+scale_max <- max(x.income, y.income, na.rm = TRUE) + 1
+p.inc <- plot.data %>% 
+  ggplot(aes(x = x.income, y = y.income, shape = District, color = Site)) +
+  geom_abline(intercept = 0, slope = 1) +
+  xlim(0, scale_max) + ylim(0, scale_max) +
+  geom_point(size = 8, alpha = 1) +
+  geom_text(aes(label = SN)) +
+  scale_shape_manual(values = c(1, 0, 2)) +
+  facet_grid(. ~ District) +
+  theme_bw() +
+  theme(panel.grid.major = element_blank(), 
+        panel.grid.minor = element_blank()) +
+  labs(title = "E. Income per household",
+       x = "Before",
+       y = "After")
+p.inc
+
+# Combine and save the plots ----
+prow <- plot_grid(p.ci + theme(legend.position = "none"),
+                  p.kg + theme(legend.position = "none"),
+                  p.crop + theme(legend.position = "none"),
+                  p.area + theme(legend.position = "none"),
+                  p.inc + theme(legend.position = "none"),
+          ncol = 2)
+# Extract and add a common legend
+p.legend <- get_legend(p.ci + theme(legend.box.margin = margin(0, 0, 0, 12)))
+prow.legend <- plot_grid(prow, p.legend, rel_widths = c(3, 0.4))
+#prow.legend
+ggsave(paste0("ScatterPlots_faceted", Sys.Date(), ".png"), plot = prow.legend, width = 12, height = 18, units = "in", dpi = 300, device = "png")
+ggsave(paste0("ScatterPlots_faceted", Sys.Date(), ".pdf"), plot = prow.legend, width = 12, height = 18, units = "in", dpi = 300, device = "pdf")
+```
+
+# Create traditional plots for manuscript
+The Wilcoxon rank sum test (Mann-Whitney U-test) (from stats::wilcox.test) was called through the ggpubr::stat_compare_means(method = "wilcox.txt") to integrate it into the plots. Traditional plots by district will be used in the manuscript. 
+
+```{r generating traditional plots by district, echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+# by commenting out the #facet.by  = "District" line, I can create the overall comparison for supplementary figure 1.
+
+# Cropping Intensity ----
+bpd <- plot.data[c("District", "x.ci", "y.ci")]
+names(bpd) <- c("District", "before", "after")
+bp.ci <- ggpaired(bpd, cond1 = "before", cond2 = "after",
+         facet.by = "District", 
+         line.color = "gray",
+         title = "A. Change in cropping intensity",
+         xlab = "",
+         ylab = "Cropping intensity") +
+  stat_compare_means(method = "wilcox.test" , 
+                     paired = TRUE,
+                     label.y.npc = .9,
+                     aes(label = paste("P =", ..p.format..) ) )
+bp.ci
+
+# Production ----
+bpd <- plot.data[c("District", "x.kg", "y.kg")]
+names(bpd) <- c("District", "before", "after")
+bp.kg <- ggpaired(bpd, cond1 = "before", cond2 = "after",
+         facet.by = "District", 
+         line.color = "gray",
+         title = "B. Change in production",
+         xlab = "",
+         ylab = "Kg") +
+  stat_compare_means(method = "wilcox.test" , 
+                     paired = TRUE,
+                     label.y.npc = .9,
+                     aes(label = paste("P =", ..p.format..) ) )
+bp.kg
+
+# Change in number of crops ----
+bpd <- plot.data[c("District", "x.crop", "y.crop")]
+names(bpd) <- c("District", "before", "after")
+bp.crop <- ggpaired(bpd, cond1 = "before", cond2 = "after",
+         facet.by = "District", 
+         line.color = "gray",
+         title = "C. Change in crops per household",
+         xlab = "",
+         ylab = "Crops per HH") +
+  stat_compare_means(method = "wilcox.test" , 
+                     paired = TRUE,
+                     label.y.npc = .9,
+                     aes(label = paste("P =", ..p.format..) ) )
+bp.crop
+
+# Change in area of production ----
+bpd <- plot.data[c("District", "x.area", "y.area")]
+names(bpd) <- c("District", "before", "after")
+bp.area <- ggpaired(bpd, cond1 = "before", cond2 = "after",
+                    facet.by = "District", 
+                    line.color = "gray",
+                    title = "D. Change in production area per household",
+                    xlab = "",
+                    ylab = "Ropani per HH") +
+  stat_compare_means(method = "wilcox.test" , 
+                     paired = TRUE,
+                     label.y.npc = .9,
+                     aes(label = paste("P =", ..p.format..) ) )
+bp.area
+
+# Change in income ----
+bpd <- plot.data[c("District", "x.income", "y.income")]
+names(bpd) <- c("District", "before", "after")
+bp.income <- ggpaired(bpd, cond1 = "before", cond2 = "after",
+                    facet.by = "District", 
+                    line.color = "gray",
+                    title = "E. Change in income per household",
+                    xlab = "",
+                    ylab = "Income from agriculture (NPR)") +
+  stat_compare_means(method = "wilcox.test" , 
+                     paired = TRUE,
+                     label.y.npc = .9,
+                     aes(label = paste("P =", ..p.format..) ) )
+bp.income
+
+# Combine and save the plots ----
+bp.row <- plot_grid(bp.ci, bp.kg, bp.crop, bp.area, bp.income,
+          ncol = 2,
+          nrow = 3)
+#bp.row
+ggsave(paste0("ComparisonPlots", Sys.Date(), ".png"), plot = bp.row, width = 13, height = 16, units = "in", dpi = 300, device = "png")
+ggsave(paste0("ComparisonPlots", Sys.Date(), ".pdf"), plot = bp.row, width = 13, height = 16, units = "in", dpi = 300, device = "pdf")
+
+```
+
+Traditional plots for all sites combined will be used for supplementary figure.
+```{r generating traditional plots for aggregate data, echo=TRUE, message=FALSE, warning=FALSE, paged.print=FALSE}
+# by commenting out the #facet.by  = "District" line, I can create the overall comparison for supplementary figure 1.
+# Cropping Intensity ----
+bpd <- plot.data[c("District", "x.ci", "y.ci")]
+names(bpd) <- c("District", "before", "after")
+bp.ci <- ggpaired(bpd, cond1 = "before", cond2 = "after",
+#         facet.by = "District", 
+         line.color = "gray",
+         title = "A. Change in cropping intensity",
+         xlab = "",
+         ylab = "Cropping intensity") +
+  stat_compare_means(method = "wilcox.test" , 
+                     paired = TRUE,
+                     label.y.npc = .9,
+                     aes(label = paste("P =", ..p.format..) ) )
+bp.ci
+
+# Production ----
+bpd <- plot.data[c("District", "x.kg", "y.kg")]
+names(bpd) <- c("District", "before", "after")
+bp.kg <- ggpaired(bpd, cond1 = "before", cond2 = "after",
+#         facet.by = "District", 
+         line.color = "gray",
+         title = "B. Change in production",
+         xlab = "",
+         ylab = "Kg") +
+  stat_compare_means(method = "wilcox.test" , 
+                     paired = TRUE,
+                     label.y.npc = .9,
+                     aes(label = paste("P =", ..p.format..) ) )
+bp.kg
+
+# Change in number of crops ----
+bpd <- plot.data[c("District", "x.crop", "y.crop")]
+names(bpd) <- c("District", "before", "after")
+bp.crop <- ggpaired(bpd, cond1 = "before", cond2 = "after",
+#         facet.by = "District", 
+         line.color = "gray",
+         title = "C. Change in crops per household",
+         xlab = "",
+         ylab = "Crops per HH") +
+  stat_compare_means(method = "wilcox.test" , 
+                     paired = TRUE,
+                     label.y.npc = .9,
+                     aes(label = paste("P =", ..p.format..) ) )
+bp.crop
+
+# Change in area of production ----
+bpd <- plot.data[c("District", "x.area", "y.area")]
+names(bpd) <- c("District", "before", "after")
+bp.area <- ggpaired(bpd, cond1 = "before", cond2 = "after",
+#                    facet.by = "District", 
+                    line.color = "gray",
+                    title = "D. Change in production area per household",
+                    xlab = "",
+                    ylab = "Ropani per HH") +
+  stat_compare_means(method = "wilcox.test" , 
+                     paired = TRUE,
+                     label.y.npc = .9,
+                     aes(label = paste("P =", ..p.format..) ) )
+bp.area
+
+# Change in income ----
+bpd <- plot.data[c("District", "x.income", "y.income")]
+names(bpd) <- c("District", "before", "after")
+bp.income <- ggpaired(bpd, cond1 = "before", cond2 = "after",
+#                    facet.by = "District", 
+                    line.color = "gray",
+                    title = "E. Change in income per household",
+                    xlab = "",
+                    ylab = "Income from agriculture (NPR)") +
+  stat_compare_means(method = "wilcox.test" , 
+                     paired = TRUE,
+                     label.y.npc = .9,
+                     aes(label = paste("P =", ..p.format..) ) )
+bp.income
+
+# Combine and save the plots ----
+bp.row <- plot_grid(bp.ci, bp.kg, bp.crop, bp.area, bp.income,
+          ncol = 2,
+          nrow = 3)
+#bp.row
+ggsave(paste0("ComparisonPlotsAggregate-", Sys.Date(), ".png"), plot = bp.row, width = 13, height = 16, units = "in", dpi = 300, device = "png")
+ggsave(paste0("ComparisonPlotsAggregate-", Sys.Date(), ".pdf"), plot = bp.row, width = 13, height = 16, units = "in", dpi = 300, device = "pdf")
+
+```
+# Session Information
+Print session information for future reproducibility
+```{r printing session information}
+sessionInfo()
+```
